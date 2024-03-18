@@ -23,6 +23,3 @@ Windows Registry Editor Version 5.00
 [HKEY_CURRENT_USER\Software\WinRAR\Extraction\Profile]
 "ShowExplorer"=dword:00000001
 "Shutdown"=dword:00000005
-
-[HKEY_CURRENT_USER\Software\WinRAR\Setup]
-"CascadedMenu"=dword:00000000

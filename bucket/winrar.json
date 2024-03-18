@@ -1,21 +1,21 @@
 {
-    "##": "WinRAR, 旧版菜单",
-    "version": "6.24",
-    "description": "Powerful archive manager",
+    "##": "WinRAR, 6.02版右键菜单",
+    "version": "7.00",
+    "description": "WinRAR 评估版，右键菜单还原为旧版 Win10 样式（适用于 Win11 旧版右键菜单）",
+    "note": "WinRAR 评估版，右键菜单还原为旧版 Win10 样式（适用于 Win11 旧版右键菜单）",
     "homepage": "https://rarlab.com/",
     "license": {
         "identifier": "Shareware",
         "url": "https://www.win-rar.com/gtb_priv.html?&L=0"
     },
-    "notes": "Set up context menu within settings window.",
     "architecture": {
         "64bit": {
-            "url": "https://www.rarlab.com/rar/winrar-x64-624.exe#/dl.7z",
-            "hash": "794481dbbc9009a2565726fb5b4a4ab2fe216ff9edbb08951548ee765de9b4a6"
+            "url": "https://www.win-rar.com/fileadmin/winrar-versions/sc/sc20240306/wrr/winrar-x64-700sc.exe",
+            "hash": "9262459ba7bbc3a07fd83b75fb294e705b912f1d29393d3eace8869a2649a7c2"
         },
         "32bit": {
-            "url": "https://www.rarlab.com/rar/winrar-x32-624.exe#/dl.7z",
-            "hash": "c8ad5d77a2882ad8fee57fff69d8f90d58cb7490b5d1cdf5571472f5fa8c7cdc"
+            "url": "https://www.win-rar.com/fileadmin/winrar-versions/sc/sc20240306/wrr/winrar-x32-700sc.exe",
+            "hash": "0caf81aab98cfaf31dc3d3580f5c23dd20a1005899904dccc395263edcfdc88b"
         }
     },
     "pre_install": ". \"$bucketsdir\\$bucket\\scripts\\$app\\hooks.ps1\"",
@@ -23,10 +23,18 @@
     "pre_uninstall": ". \"$bucketsdir\\$($install.bucket)\\scripts\\$app\\hooks.ps1\"",
     "post_uninstall": ". \"$bucketsdir\\$($install.bucket)\\scripts\\$app\\hooks.ps1\"",
     "installer": {
-        "script": "cmd /c \"$dir\\Uninstall.exe /s /setup\""
+        "args": [
+            "/s",
+            "/d$dir"
+        ]
     },
     "uninstaller": {
-        "script": "cmd /c \"$dir\\Uninstall.exe\" /s"
+        "file": "Uninstall.exe",
+        "args": "/s",
+        "script": [
+            ". \"$bucketsdir\\$($install.bucket)\\scripts\\$app\\hooks.ps1\"",
+            "uninstall"
+        ]
     },
     "bin": [
         "Rar.exe",
@@ -43,18 +51,18 @@
         "rarreg.key",
         "Themes"
     ],
-    "checkver": "WinRAR and RAR ([\\d.]+) release",
+    "checkver": {
+        "url": "https://apphot.cc/121.html",
+        "regex": "([\\d.]+) 简体中文正式商业评估版[^\\d]+/sc(?<date>\\d{8,8})/wrr/winrar-x(?:64|32)-[\\d]+sc.exe"
+    },
     "autoupdate": {
         "architecture": {
             "64bit": {
-                "url": "https://www.rarlab.com/rar/winrar-x64-$cleanVersion.exe#/dl.7z"
+                "url": "https://www.win-rar.com/fileadmin/winrar-versions/sc/sc$matchDate/wrr/winrar-x64-$cleanVersionsc.exe"
             },
             "32bit": {
-                "url": "https://www.rarlab.com/rar/winrar-x32-$cleanVersion.exe#/dl.7z"
+                "url": "https://www.win-rar.com/fileadmin/winrar-versions/sc/sc$matchDate/wrr/winrar-x32-$cleanVersionsc.exe"
             }
         }
-    },
-    "depends": [
-        "sudo"
-    ]
+    }
 }

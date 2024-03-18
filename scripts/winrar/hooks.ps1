@@ -1,17 +1,15 @@
 function NotifyShellChange {
-  $signature = @'
-[DllImport("shell32.dll")]
-public static extern void SHChangeNotify(int wEventId, int uFlags, IntPtr dwItem1, IntPtr dwItem2);
+  $code = @'
+  [System.Runtime.InteropServices.DllImport("Shell32.dll")] 
+  private static extern int SHChangeNotify(int eventId, int flags, IntPtr item1, IntPtr item2);
+
+  public static void Refresh()  {
+      SHChangeNotify(0x8000000, 0x1000, IntPtr.Zero, IntPtr.Zero);    
+  }
 '@
 
-  $shell32 = Add-Type -MemberDefinition $signature -Name 'Shell32Lib' -Namespace Win32 -PassThru
-
-  # 然后调用SHChangeNotify函数
-  $SHCNE_ASSOCCHANGED = 0x08000000  # 文件关联更改事件
-  $SHCNF_IDLIST = 0x0000  # dwItem1和dwItem2都是PIDL列表
-
-  # 示例调用
-  $shell32::SHChangeNotify($SHCNE_ASSOCCHANGED, $SHCNF_IDLIST, [IntPtr]::Zero, [IntPtr]::Zero)
+  Add-Type -MemberDefinition $code -Namespace WinAPI -Name Explorer 
+  [WinAPI.Explorer]::Refresh()
 }
 
 function RegAccess {
@@ -22,8 +20,8 @@ function RegAccess {
     [string]$path,
     $Encoding = "utf8",
     [Parameter(Mandatory = $false)]
-    [Alias("Import")]
-    [switch]$importReg = $false
+    [Alias("RefuseDelete")]
+    [switch]$denyDelete = $false
   )
 
   Process {
@@ -49,7 +47,7 @@ function RegAccess {
       foreach ($joinedline in $joinedlines) {
         if ($joinedline.StartsWith("[HKEY") -and $joinedline.EndsWith("]")) {
           $procetPath += $joinedline          
-          ChangeAccess -Path $joinedline.Trim("[", "]") -DenyDelete $importReg | Out-Null
+          ChangeAccess -Path $joinedline.Trim("[", "]") -DenyDelete:$denyDelete | Out-Null
         }          
       }
     }
@@ -89,81 +87,105 @@ function ChangeAccess {
   
     if ($key) {
       $acl = $key.GetAccessControl()
-      # Write-Output $key.GetAccessControl() | Format-List
       $acl.Access | ForEach-Object {
-        if ($_.IdentityReference -eq "Everyone") {
+        if ($_.IdentityReference -eq "Everyone" -and $_.IsInherited -eq $false -and $_.AccessControlType -eq "Deny") {
           $Acl.RemoveAccessRule($_) | Out-Null
         }
       }
       if ($setRule) {
         $acl.SetAccessRule($rule)
-      }
-    
+      }    
       $key.SetAccessControl($acl)
-    
-      # Write-Output $key.GetAccessControl() | Format-List
-  
+      $key.Close()
+    }
+  }
+}
+
+# 删除临时文件
+function RemoveTmp {
+  param($dir)
+  if (Test-Path "$dir/..") {
+    Get-ChildItem -Path "$dir/.." -Recurse -Filter "*.tmp" -File | ForEach-Object {
+      Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
+function RestoreWin10RightClickMenu {
+  $appScripts = "$bucketsdir\$bucket\scripts\$app"
+  # 如果是win10旧版菜单
+  if (Test-Path "HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32") {
+    "RarExt.dll", "RarExt32.dll" | ForEach-Object {
+      # 如果dll文件版本不为6.2.0,，则复制旧版dll文件到当前目录
+      if ((Get-Item "$dir\$_").VersionInfo.ProductVersion -ne '6.2.0' -and (Test-Path "$appScripts\$_")) {
+        Rename-Item -Path "$dir\$_" -NewName "$_.$(Get-Date -F yyyyMMddTHHmmssffff).0.tmp" -Force
+        Copy-Item -Path "$appScripts\$_" -Destination "$dir\$_"
+      }
+    }
+    # 添加默认建议设置，及还原旧版右键注册项
+    "Setting.reg", "602ContextMenu.reg" | ForEach-Object {
+      $path = "$appScripts\$_"
+      if ((Test-Path $path)) {
+        cmd /c regedit.exe /s $path
+      }
+    }
+    # 设置权限，保护相关注册项，防止WinRAR删除
+    RegAccess "$appScripts\602ContextMenu.reg" -RefuseDelete
+    # 通知shell关联更新
+    NotifyShellChange
+  }
+  else {
+    # 默认建议设置
+    "Setting.reg" | ForEach-Object {
+      $path = "$appScripts\$_"
+      if ((Test-Path $path)) {
+        cmd /c regedit.exe /s $path
+      }
     }
   }
 }
 
 function pre_install {
-  if (!(is_admin)) { Get-error "$app requires admin rights to $cmd"; break }
+  if (!(is_admin)) { error "$app requires admin rights to $cmd"; exit 1 }
+  if (!(Test-Path "$persist_dir\rarreg.key")) { New-Item "$dir\rarreg.key" | Out-Null }
+  # if (!(Test-Path "$persist_dir\WinRar.ini")) { New-Item "$dir\WinRar.ini" | Out-Null }
   'rarreg.key' | ForEach-Object {
     if (!(Test-Path "$persist_dir\$_") -and (Test-Path "$bucketsdir\$bucket\scripts\WinRAR\$_")) {
       Copy-Item "$bucketsdir\$bucket\scripts\WinRAR\$_" -Destination "$dir" | Out-Null
     }
   }
-  # if (!(Test-Path "$persist_dir\WinRar.ini")) { New-Item "$dir\WinRar.ini" | Out-Null }
-
-  # 获取匹配文件并删除（忽略错误）
-  Get-ChildItem -Path $dir -Filter "*.tmp" -File | ForEach-Object {
-    Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
-  }
+  RemoveTmp $dir
 }
 
 function post_install {
-  $appScripts = "$bucketsdir\$bucket\scripts\$app"
-  "RarExt.dll", "RarExt32.dll" | ForEach-Object {
-    if ((Test-Path "$dir\$_")) {
-      Rename-Item -Path "$dir\$_" -NewName "$_.$(Get-Date -F yyyyMMddTHHmmssffff).0.tmp" -Force
-    }
-    if ((Test-Path "$appScripts\$_")) {
-      Copy-Item -Path "$appScripts\$_" -Destination "$dir\$_"
-    }
-  }
-  "Setting.reg", "602ContextMenu.reg" | ForEach-Object {
-    $path = "$appScripts\$_"
-    if ((Test-Path $path)) {
-      cmd /c regedit.exe /s $path
-    }
-  }
-  # import and deny delete registy path
-  RegAccess "$appScripts\602ContextMenu.reg" -Import
-  NotifyShellChange
-
-  # 删除临时文件（忽略错误）
-  Get-ChildItem -Path $dir -Filter "*.tmp" -File | ForEach-Object {
-    Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
-  }
-  # # 删除 WinRar.ini
-  # Get-ChildItem -Path $dir -Filter "WinRar.ini" -File | ForEach-Object {
-  #   Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
-  # }
+  RestoreWin10RightClickMenu
+  RemoveTmp $dir
 }
 
 function pre_uninstall {
-  if (!(is_admin)) { Get-error "$app requires admin rights to $cmd"; break }
+  if (!(is_admin)) { Get-error "$app requires admin rights to $cmd"; exit 1 }
   $appScripts = "$bucketsdir\$($install.bucket)\scripts\$app"
   # remove deny delete access
   RegAccess "$appScripts\602ContextMenu.reg"
 }
 
 function post_uninstall {
-  # 删除临时文件
-  Get-ChildItem -Path $dir -Filter "*.tmp" -File | ForEach-Object {
-    Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
-  }
+  RemoveTmp $dir
+  NotifyShellChange
+}
+
+function uninstall {
+  $filePath = "$dir\Uninstall.exe"
+  cmd /c "$filePath /s"
+  $maxWaitTimeInSeconds = 30
+
+  $startTime = (Get-Date)
+  do {
+    if (-not (Test-Path -Path $filePath)) {
+      break
+    }
+    Start-Sleep -Seconds 1
+  } until (((Get-Date) - $startTime).TotalSeconds -gt $maxWaitTimeInSeconds)
 }
 
 Switch ($HookType) {
