@@ -1,0 +1,23 @@
+{
+    "version": "0.2024.03.18",
+    "description": "Command for scoop local installation.",
+    "homepage": "https://github.com/uuRRx0/scoop-utils",
+    "license": "MIT",
+    "url": "https://mirror.ghproxy.com/https://raw.githubusercontent.com/uuRRx0/scoop-utils/3a34d468ba6074bb2f418a8d8325b17e38942a05/scoop-setup.ps1",
+    "hash": "33a5be93bda8826b3e16b6fec13682e00c39f2fc0c7609ab59fd828c9e0ad1ae",
+    "checkver": {
+        "url": "https://github.com/uuRRx0/scoop-utils/commits/main/scoop-setup.ps1.atom",
+        "regex": "(?s)>(\\d+)-(\\d+)-(\\d+)T.*?/(?<sha>[0-9a-f]{40})",
+        "replace": "0.${1}.${2}.${3}"
+    },
+    "pre_uninstall": [
+      "Remove-Item -Path \"$scoopdir/shims/scoop-setup.ps1\" -ErrorAction SilentlyContinue"
+    ],
+    "post_install": [
+      "Remove-Item -Path \"$scoopdir/shims/scoop-setup.ps1\" -ErrorAction SilentlyContinue",
+      "New-Item -ItemType HardLink -Target \"$dir/scoop-setup.ps1\" -Path \"$scoopdir/shims/scoop-setup.ps1\" | Out-Null"
+    ],
+    "autoupdate": {
+        "url": "https://mirror.ghproxy.com/https://raw.githubusercontent.com/uuRRx0/scoop-utils/$matchSha/scoop-setup.ps1"
+    }
+}
