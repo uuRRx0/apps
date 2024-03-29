@@ -18,7 +18,6 @@ function post_install {
 
 function pre_uninstall {
   if (!(is_admin)) { Get-error "$app requires admin rights to $cmd"; exit 1 }
-  . "$PSScriptRoot\menu.ps1" 4
 }
 
 function uninstall {
@@ -42,12 +41,15 @@ function uninstall {
 Switch ($HookType) {
   'pre_install' {
     pre_install
+    continue
   }
   'post_install' {
     post_install
+    continue
   }
   'pre_uninstall' {
     pre_uninstall
+    continue
   }
   default {
     exit 0

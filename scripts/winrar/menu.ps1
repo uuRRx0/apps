@@ -11,8 +11,14 @@ Param($mode)
 #    4.还原（移除所有该程序带来的改变）
 #    5.右键菜单关联选项设置（Win11上未设置层叠选项时是看不见的）
 #    6.设置推荐选项
-
-$scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { '.' }
+$scriptDir = $PSScriptRoot
+if ($MyInvocation.MyCommand.CommandType -eq "ExternalScript") {
+  $scriptDir = Split-Path -Parent -Path $MyInvocation.MyCommand.Definition 
+}
+else {
+  $scriptDir = Split-Path -Parent -Path ([Environment]::GetCommandLineArgs()[0]) 
+  if (!$scriptDir) { $scriptDir = "." } 
+}
 $contextMenuReg = 'Windows Registry Editor Version 5.00
 [HKEY_LOCAL_MACHINE\SOFTWARE\Classes\*\shellex\ContextMenuHandlers\WinRAR]
 @="{B41DB860-64E4-11D2-9906-E49FADC173CA}"
@@ -86,27 +92,35 @@ function Menu {
       1 {
         InstallApp -Silent
         UpdateMenu
+        continue
       }
       2 {
         ResetMenu
         UninstallApp -Silent
+        continue
       }
       3 {
         UpdateMenu
+        continue
       }
       4 {
         ResetMenu
+        continue
       }
       6 {
         $suggestReg | AddToRegedit
+        continue
       }
     }
   }
 }
 
 function GetAppPath {
-  $installedPath = try { (Get-ItemProperty "HKLM:SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\WinRAR.exe" -ErrorAction SilentlyContinue).Path } catch { $scriptDir }
-  "$installedPath/Uninstall.exe"
+  $installedPath = (Get-ItemProperty "HKLM:SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\WinRAR.exe" -ErrorAction SilentlyContinue).Path
+  if (!$installedPath) {
+    $installedPath = $scriptDir
+  }
+  "$installedPath\Uninstall.exe"
 }
 
 function InstallApp {
@@ -116,7 +130,7 @@ function InstallApp {
   )
   $file = GetAppPath
   if ((Test-Path $file) -and (Get-Item $file).VersionInfo.FileDescription -eq "卸载 WinRAR") {
-    cmd /c "$file /setup$(if($Silent){ " /s" } else { '' })"
+    Invoke-Expression "cmd /c '`"$file`" /setup$(if($Silent){ " /s" } else { '' })'"
   }
 }
 
@@ -127,8 +141,22 @@ function UninstallApp {
   )
   $file = GetAppPath
   if ((Test-Path $file) -and (Get-Item $file).VersionInfo.FileDescription -eq "卸载 WinRAR") {
-    cmd /c "$file$(if($Silent){ " /s" } else { '' })"
+    Invoke-Expression "cmd /c '`"$file`"$(if($Silent){ " /s" } else { '' })'"
+    if ($file.Contains($scriptDir)){
+      Clean Split-Path -Parent -Path $file
+    }
   }
+}
+
+function Clean {
+  [CmdletBinding()]
+  Param(
+    [string]$Path
+  )
+  Get-ChildItem -Path $Path -Recurse -Force | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
+
+  # 删除空文件夹，如果还存在的话
+  Remove-Item -Path $Path -Force -ErrorAction SilentlyContinue
 }
 
 function JudgeAdmin {
@@ -150,6 +178,10 @@ function JudgeWin11 {
 
 function JudgeWin10Menu {
   Test-Path "HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32"
+}
+
+function JudgeProxy {
+  try { ((Invoke-WebRequest 'https://raw.githubusercontent.com' -TimeoutSec 3).StatusCode -ne 200) } catch { $true }
 }
 
 function Out-UTF8File {
@@ -343,47 +375,7 @@ function MoveFile {
   }
 }
 
-function Update-ExplorerIcon {
-<#
-.SYNOPSIS
-    Updates Explorer icons
-.DESCRIPTION
-    Updates Explorer icons
-.NOTES
-    Source: https://community.idera.com/database-tools/powershell/powertips/b/tips/posts/refreshing-icon-cache
-#>
-
-    [CmdletBinding(ConfirmImpact='Low')]
-    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions','')]
-    param()
-
-    $code = @'
-private static readonly IntPtr HWND_BROADCAST = new IntPtr(0xffff);
-private const int WM_SETTINGCHANGE = 0x1a;
-private const int SMTO_ABORTIFHUNG = 0x0002;
- 
-[System.Runtime.InteropServices.DllImport("user32.dll", SetLastError=true, CharSet=CharSet.Auto)]
- static extern bool SendNotifyMessage(IntPtr hWnd, uint Msg, UIntPtr wParam,
-   IntPtr lParam);
- 
-[System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
-  private static extern IntPtr SendMessageTimeout ( IntPtr hWnd, int Msg, IntPtr wParam, string lParam, uint fuFlags, uint uTimeout, IntPtr lpdwResult );
- 
-[System.Runtime.InteropServices.DllImport("Shell32.dll")]
-private static extern int SHChangeNotify(int eventId, int flags, IntPtr item1, IntPtr item2);
- 
-public static void Refresh() {
-    SHChangeNotify(0x8000000, 0x1000, IntPtr.Zero, IntPtr.Zero);
-    SendMessageTimeout(HWND_BROADCAST, WM_SETTINGCHANGE, IntPtr.Zero, null, SMTO_ABORTIFHUNG, 100, IntPtr.Zero);
-}
-'@
-
-    Add-Type -MemberDefinition $code -Namespace MyWinAPI -Name Explorer
-    [MyWinAPI.Explorer]::Refresh()
-
-}
-
-Function Refresh{
+Function Refresh {
   $source = @"
 using System;
 using System.Collections.Generic;
@@ -393,11 +385,21 @@ namespace FileEncryptProject.Algorithm
 {
  public class DesktopRefurbish
  {
+  private static readonly IntPtr HWND_BROADCAST = new IntPtr(0xffff);
+  private const int WM_SETTINGCHANGE = 0x1a;
+  private const int SMTO_ABORTIFHUNG = 0x0002;
+  [DllImport("user32.dll", SetLastError=true, CharSet=CharSet.Auto)]
+  private static extern bool SendNotifyMessage(IntPtr hWnd, uint Msg, UIntPtr wParam,
+    IntPtr lParam);
+  
+   [DllImport("user32.dll", SetLastError = true)]
+   private static extern IntPtr SendMessageTimeout ( IntPtr hWnd, int Msg, IntPtr wParam, string lParam, uint fuFlags, uint uTimeout, IntPtr lpdwResult );
    [DllImport("shell32.dll")]
    public static extern void SHChangeNotify(HChangeNotifyEventID wEventId, HChangeNotifyFlags uFlags, IntPtr dwItem1, IntPtr dwItem2);
    public static void DeskRef()
    {
      SHChangeNotify(HChangeNotifyEventID.SHCNE_ASSOCCHANGED, HChangeNotifyFlags.SHCNF_IDLIST, IntPtr.Zero, IntPtr.Zero);
+     SendMessageTimeout(HWND_BROADCAST, WM_SETTINGCHANGE, IntPtr.Zero, null, SMTO_ABORTIFHUNG, 100, IntPtr.Zero);
    }
  }
  #region public enum HChangeNotifyFlags
@@ -443,8 +445,8 @@ namespace FileEncryptProject.Algorithm
  #endregion
 }
 "@
-    Add-Type -TypeDefinition $source
-   [FileEncryptProject.Algorithm.DesktopRefurbish]::DeskRef()
+  Add-Type -TypeDefinition $source
+  [FileEncryptProject.Algorithm.DesktopRefurbish]::DeskRef()
 }
 
 function ReplaceDll {
@@ -456,14 +458,15 @@ function ReplaceDll {
   if ($version -match "\d+\.\d+\.\d") {
     $version = GetShowVersion $version
   }
-  # $url = "https://www.win-rar.com/fileadmin/winrar-versions/sc/sc20210616/wrr/wrar602sc.exe"
-  # $url64 = "https://www.win-rar.com/fileadmin/winrar-versions/sc/sc20210616/wrr/winrar-x64-602sc.exe"
-  $installedPath = try { (Get-ItemProperty "HKLM:SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\WinRAR.exe" -ErrorAction SilentlyContinue).Path } catch { $scriptDir }
+  $installedPath = GetAppPath
   'RarExt', 'RarExt32' | ForEach-Object {
     $NewName = "$_.dll"
     $path = "$installedPath\$NewName"
-    $replaceFiles = @("$scriptDir\$_`_$version.dll", "$installedPath\$_`_$version.dll")
+    $replaceFiles = @("$scriptDir\$_`_$version.dll", "$installedPath\$_`_$version.dll", "$env:tmp\$_`_$version.dll")
     Switch ($replaceFiles) {
+      { !(Test-Path $_) -and $_.Contains($env:tmp) -and ($version -eq 'v602') } {
+        DownloadDll $version
+      }
       { (Test-Path $path) -and ((GetFileInfo $path).showVersion -eq $version) } { continue }
       { !(Test-Path $_) } { continue }
       default {
@@ -472,6 +475,51 @@ function ReplaceDll {
       }
     }
   }
+}
+
+function GetGithubUri {
+  [CmdletBinding()]
+  Param(
+    [Parameter(ValueFromPipeline = $true)]
+    [string]$Path,
+    [switch]$Proxy
+  )
+  $uri = "https://raw.githubusercontent.com/$Path"
+  if ($Proxy) {
+    $uri = "https://mirror.ghproxy.com/$uri"
+  }
+  $uri
+}
+
+function DownloadDll {
+  [CmdletBinding()]
+  Param(
+    [Parameter(ValueFromPipeline = $true)]
+    [string]$version
+  )
+  if ($version -match "\d+\.\d+\.\d") {
+    $version = GetShowVersion $version
+  }
+  $files = @()
+  $proxy = JudgeProxy
+  'RarExt', 'RarExt32' | ForEach-Object {
+    $path = "$env:tmp\$_`_$version.dll"
+    if (!(Test-Path $path)) {
+      $files += @{
+        Uri     = "uuRRx0/apps/main/scripts/winrar/$_`_$version.dll" | GetGithubUri -Proxy:$proxy
+        OutFile = $path
+      }
+    }
+  }
+  $jobs = @()
+
+  foreach ($file in $files) {
+    $jobs += Start-ThreadJob -Name $file.OutFile -ScriptBlock {
+      $params = $using:file
+      Invoke-WebRequest @params
+    }
+  }
+  Wait-Job -Job $jobs | Out-Null
 }
 
 function RestoreDll {
@@ -491,9 +539,9 @@ function AddToRegedit {
   )
   $filePath = "$env:tmp\WinRAR.reg"
   # 生成reg文件
-  $contextMenuReg | Out-UTF8File -FilePath $filePath
+  $Value | Out-UTF8File -FilePath $filePath
   # 导入reg文件
-  cmd /c regedit.exe /s $filePath
+  Invoke-Expression "cmd /c 'regedit.exe /s `"$filePath`"'"
   Remove-Item $filePath -Force -ErrorAction SilentlyContinue
 }
 
@@ -511,12 +559,14 @@ function RemoveRegistry {
 
 function ToggleCascadedMenu {
   Param($Value)
-  if ($null -eq $Value) {
-    $Value = (Get-ItemProperty -Path "HKCU:\Software\WinRAR\Setup" -ErrorAction SilentlyContinue).CascadedMenu
+  $path = "HKCU:\Software\WinRAR\Setup"
+  if (($null -eq $Value) -and (Test-Path $path)) {
+    $Value = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue.CascadedMenu
     $Value = if ($Value -eq 0) { 1 } else { 0 }
   }
-  New-Item -Path "HKCU:\Software\WinRAR\Setup" -ErrorAction SilentlyContinue | Out-Null
-  Set-ItemProperty -Path "HKCU:\Software\WinRAR\Setup" -Name "CascadedMenu" -Value $Value
+  New-Item -Path "HKCU:\Software\WinRAR" -ErrorAction SilentlyContinue | Out-Null
+  New-Item -Path $path -ErrorAction SilentlyContinue | Out-Null
+  Set-ItemProperty -Path $path -Name "CascadedMenu" -Value $Value
 }
 
 function SetWin10Menu {
@@ -569,9 +619,7 @@ function UpdateMenu {
 }
 
 function ResetMenu {
-  if ($(JudgeWin11)) {
-    UpdateMenu -Win11
-  }
+  UpdateMenu -Win11
 }
 
 function Invoke {
@@ -579,23 +627,24 @@ function Invoke {
     Menu $mode
   }
   else {
-    
-    Write-Output "请选择以下选项进行操作："
+    $tips = "选项:"
     $str = '#    1.安装（且自动设置右键菜单）
     #    2.卸载（且移除相关"自动设置右键菜单"的注册表选项）
     #    3.自动设置右键菜单（依据右键菜单的样式，Win10|Win11）
     #    4.还原（移除所有该程序带来的改变）
-    #    5.右键菜单关联选项设置（Win11上未设置层叠选项时是看不见的）
+    #    5.右键菜单关联选项设置[开发中]（Win11上未设置层叠选项时是看不见的）
     #    6.设置推荐选项'
     $str | Select-String -Pattern "\d\.[^\r\n（]+" -AllMatches | ForEach-Object { $_.Matches } | ForEach-Object {
-      Write-Output $_.Value
+      $tips += "`r`n"
+      $tips += $_.Value
     }
-    $mode = Read-Host "请输入1-5:"
+    $tips += "`r`n请选择"
+    $mode = Read-Host $tips
     Write-Output ''
     Invoke $mode
   }
 }
 
-if($null -ne $mode){
+if ($null -ne $mode) {
   Invoke $mode
 }
