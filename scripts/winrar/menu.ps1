@@ -11,12 +11,16 @@ Param($mode)
 #    4.还原（移除所有该程序带来的改变）
 #    5.右键菜单关联选项设置（Win11上未设置层叠选项时是看不见的）
 #    6.设置推荐选项
+
 $scriptDir = $PSScriptRoot
+$isExe = [Environment]::GetCommandLineArgs()[0] -match '\.exe$'
+$isFastMode = [Environment]::GetCommandLineArgs()[0] -match "\\(?!menu)(?<mode>[^\\]+)\.exe"
+$fastMode = if ($isExe -and $isFastMode) { $Matches.mode }
+
 if ($MyInvocation.MyCommand.CommandType -eq "ExternalScript") {
   $scriptDir = Split-Path -Parent -Path $MyInvocation.MyCommand.Definition 
-}
-else {
-  $scriptDir = Split-Path -Parent -Path ([Environment]::GetCommandLineArgs()[0]) 
+} else {
+  $scriptDir = Split-Path -Parent -Path ([Environment]::GetCommandLineArgs()[0])
   if (!$scriptDir) { $scriptDir = "." } 
 }
 $contextMenuReg = 'Windows Registry Editor Version 5.00
@@ -72,9 +76,8 @@ $suggestReg = 'Windows Registry Editor Version 5.00
 function Menu {
   [CmdletBinding()]
   Param(
-    [Parameter(Mandatory)]
-    [ValidatePattern("[1-46]")]
-    [string]$actionNum
+    [Parameter(Mandatory, ValueFromPipeline)]
+    [string]$actionType
   )
   Begin {
     $isAdmin = JudgeAdmin
@@ -88,49 +91,78 @@ function Menu {
       Start-Process "$psHome\powershell.exe" -ArgumentList "$currentFile $fullPara" -verb runas
       return
     }
-    Switch ($actionNum) {
-      1 {
+    Switch -Regex ($actionType) {
+      "1|setup" {
+        if ($(JudgeFirstInstall)) {
+          $suggestReg | AddToRegedit
+        }
         InstallApp -Silent
         UpdateMenu
         continue
       }
-      2 {
+      "2|uninstall" {
         ResetMenu
         UninstallApp -Silent
         continue
       }
-      3 {
+      "3|update" {
         UpdateMenu
         continue
       }
-      4 {
+      "4|reset" {
         ResetMenu
         continue
       }
-      6 {
+      "6|suggest" {
         $suggestReg | AddToRegedit
         continue
+      }
+      default {
+        InvokeOption
       }
     }
   }
 }
 
+function GetInstalledPath {
+  (Get-ItemProperty "HKLM:SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\WinRAR.exe" -ErrorAction SilentlyContinue).Path
+}
+
 function GetAppPath {
-  $installedPath = (Get-ItemProperty "HKLM:SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\WinRAR.exe" -ErrorAction SilentlyContinue).Path
+  $installedPath = GetInstalledPath
   if (!$installedPath) {
     $installedPath = $scriptDir
   }
   "$installedPath\Uninstall.exe"
 }
 
+function JudgeFirstInstall {
+  !(Test-Path "HKCU:Software\WinRAR") -or !$(GetInstalledPath)
+}
+
 function InstallApp {
   [CmdletBinding()]
   Param(
-    [switch]$Silent
+    [switch]$Silent,
+    [string]$Path
   )
-  $file = GetAppPath
+  # 当前目录有uninstall则先安装此项
+  # 没有则查找WinRAR进行安装
+  $file = "$scriptDir\Uninstall.exe"
   if ((Test-Path $file) -and (Get-Item $file).VersionInfo.FileDescription -eq "卸载 WinRAR") {
     Invoke-Expression "cmd /c '`"$file`" /setup$(if($Silent){ " /s" } else { '' })'"
+  } else {
+    $files = Get-ChildItem -Path $scriptDir -Filter "WinRAR*.exe" | Where-Object { (Get-Item $_).VersionInfo.ProductName -match "WinRAR\s.+" } | ForEach-Object { $_.FullName }
+    if ($files[0]) {
+      Switch (@($Path, $(GetInstalledPath), $scriptDir)) {
+        { $null -eq $_ } {
+          continue
+        }
+        default {
+          Invoke-Expression "cmd /c '`"$($files[0])`" /d`"$_`"$(if($Silent){ " /S" } else { '' })'"
+        }
+      }
+    }
   }
 }
 
@@ -142,7 +174,7 @@ function UninstallApp {
   $file = GetAppPath
   if ((Test-Path $file) -and (Get-Item $file).VersionInfo.FileDescription -eq "卸载 WinRAR") {
     Invoke-Expression "cmd /c '`"$file`"$(if($Silent){ " /s" } else { '' })'"
-    if ($file.Contains($scriptDir)){
+    if ($file.Contains($scriptDir)) {
       Clean Split-Path -Parent -Path $file
     }
   }
@@ -169,8 +201,7 @@ function JudgeWin11 {
   $isPS7 = $psversiontable.PSVersion -match '7.\d.\d'
   $sysInfo = if ($isPS7) {
     (Get-CimInstance -ClassName Win32_OperatingSystem)
-  }
-  else {
+  } else {
     (Get-WmiObject Win32_OperatingSystem)
   }
   $sysInfo.Caption -Match "Windows 11"
@@ -197,15 +228,13 @@ function Out-UTF8File {
   process {
     if ($Append) {
       [System.IO.File]::AppendAllText($FilePath, $InputObject)
-    }
-    else {
+    } else {
       if (!$NoNewLine) {
         # Ref: https://stackoverflow.com/questions/5596982
         # Performance Note: `WriteAllLines` throttles memory usage while
         # `WriteAllText` needs to keep the complete string in memory.
         [System.IO.File]::WriteAllLines($FilePath, $InputObject)
-      }
-      else {
+      } else {
         # However `WriteAllText` does not add ending newline.
         [System.IO.File]::WriteAllText($FilePath, $InputObject)
       }
@@ -366,10 +395,9 @@ function MoveFile {
       MoveFile $NewPath -FormatName
     }
     if ($Copy) {
-      Copy-Item -Path $Path -Destination $NewPath -Force -ErrorAction SilentlyContinue
-    }
-    else {
-      Move-Item -Path $Path -Destination $NewPath -Force -ErrorAction SilentlyContinue
+      Copy-Item -Path $Path -Destination $NewPath -Force
+    } else {
+      Move-Item -Path $Path -Destination $NewPath -Force
     }
     $NewPath
   }
@@ -458,18 +486,19 @@ function ReplaceDll {
   if ($version -match "\d+\.\d+\.\d") {
     $version = GetShowVersion $version
   }
-  $installedPath = GetAppPath
+  $installedPath = GetInstalledPath
   'RarExt', 'RarExt32' | ForEach-Object {
+    $fileName = $_
     $NewName = "$_.dll"
     $path = "$installedPath\$NewName"
     $replaceFiles = @("$scriptDir\$_`_$version.dll", "$installedPath\$_`_$version.dll", "$env:tmp\$_`_$version.dll")
     Switch ($replaceFiles) {
       { !(Test-Path $_) -and $_.Contains($env:tmp) -and ($version -eq 'v602') } {
-        DownloadDll $version
+        DownloadDll -Version $version -FileName $fileName
       }
       { (Test-Path $path) -and ((GetFileInfo $path).showVersion -eq $version) } { continue }
       { !(Test-Path $_) } { continue }
-      default {
+      $_ {
         MoveFile $_ -Destination $installedPath -NewName $NewName -ExistBackupFormat -Copy
         Refresh
       }
@@ -495,31 +524,25 @@ function DownloadDll {
   [CmdletBinding()]
   Param(
     [Parameter(ValueFromPipeline = $true)]
-    [string]$version
+    [string]$Version,
+    [Parameter(ValueFromPipeline = $true)]
+    [string]$FileName
   )
-  if ($version -match "\d+\.\d+\.\d") {
-    $version = GetShowVersion $version
+  if ($Version -match "\d+\.\d+\.\d") {
+    $Version = GetShowVersion $Version
   }
-  $files = @()
-  $proxy = JudgeProxy
-  'RarExt', 'RarExt32' | ForEach-Object {
-    $path = "$env:tmp\$_`_$version.dll"
-    if (!(Test-Path $path)) {
-      $files += @{
-        Uri     = "uuRRx0/apps/main/scripts/winrar/$_`_$version.dll" | GetGithubUri -Proxy:$proxy
-        OutFile = $path
-      }
-    }
-  }
-  $jobs = @()
 
-  foreach ($file in $files) {
-    $jobs += Start-ThreadJob -Name $file.OutFile -ScriptBlock {
-      $params = $using:file
-      Invoke-WebRequest @params
+  $proxy = JudgeProxy
+  $name = "$FileName`_$Version.dll"
+  $path = "$env:tmp\$name"
+  if (!(Test-Path $path)) {
+    $file = @{
+      Uri     = "uuRRx0/apps/main/scripts/winrar/$name" | GetGithubUri -Proxy:$proxy
+      OutFile = $path
     }
+    Write-Host "Downloadling $FileName..."
+    Invoke-WebRequest -Uri $file.Uri -OutFile $file.OutFile
   }
-  Wait-Job -Job $jobs | Out-Null
 }
 
 function RestoreDll {
@@ -609,8 +632,7 @@ function UpdateMenu {
         $isWin10Menu = JudgeWin10Menu
         if ($isWin10Menu) {
           SetWin10Menu
-        }
-        else {
+        } else {
           SetWin11Menu
         }
       }
@@ -622,17 +644,17 @@ function ResetMenu {
   UpdateMenu -Win11
 }
 
-function Invoke {
-  if ($mode -match "[1-46]") {
-    Menu $mode
-  }
-  else {
+function InvokeOption {
+  # eg. 1,5
+  if ($mode -match "[1-46](?:,[1-46])*") {
+    $mode.Split(',') | Menu
+  } else {
     $tips = "选项:"
     $str = '#    1.安装（且自动设置右键菜单）
     #    2.卸载（且移除相关"自动设置右键菜单"的注册表选项）
     #    3.自动设置右键菜单（依据右键菜单的样式，Win10|Win11）
     #    4.还原（移除所有该程序带来的改变）
-    #    5.右键菜单关联选项设置[开发中]（Win11上未设置层叠选项时是看不见的）
+    #    5.右键菜单关联选项设置[待开发]（Win11上未设置层叠选项时是看不见的）
     #    6.设置推荐选项'
     $str | Select-String -Pattern "\d\.[^\r\n（]+" -AllMatches | ForEach-Object { $_.Matches } | ForEach-Object {
       $tips += "`r`n"
@@ -641,10 +663,14 @@ function Invoke {
     $tips += "`r`n请选择"
     $mode = Read-Host $tips
     Write-Output ''
-    Invoke $mode
+    InvokeOption
   }
 }
 
-if ($null -ne $mode) {
-  Invoke $mode
+if ($isFastMode) {
+  Menu $fastMode
+} elseif (($null -ne $mode) -or $isExe) {
+  InvokeOption
 }
+
+Read-Host 'Error'
