@@ -647,7 +647,7 @@ function ResetMenu {
 function InvokeOption {
   # eg. 1,5
   if ($mode -match "[1-46](?:,[1-46])*") {
-    $mode.Split(',') | Menu
+    $Matches[0].Split(',') | Menu
   } else {
     $tips = "选项:"
     $str = '#    1.安装（且自动设置右键菜单）
@@ -672,5 +672,3 @@ if ($isFastMode) {
 } elseif (($null -ne $mode) -or $isExe) {
   InvokeOption
 }
-
-Read-Host 'Error'
